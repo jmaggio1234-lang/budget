@@ -187,11 +187,17 @@ td{padding:9px 5px;border-bottom:1px solid var(--line);font-variant-numeric:tabu
   <section class="view" id="v-bills">
     <div class="card">
       <h2>Bills this month</h2>
+      <p style="color:var(--dim);font-size:12.5px;margin:-4px 0 8px">
+        Tap a bill to log what it actually cost. Tick to mark it funded.</p>
       <div id="billlist"></div>
     </div>
     <div class="card">
       <h2>Paychecks this month</h2>
       <div id="paylist"></div>
+    </div>
+    <div class="card">
+      <h2>All bills &mdash; edit or remove</h2>
+      <div id="billdefs"></div>
     </div>
   </section>
 
@@ -240,7 +246,7 @@ td{padding:9px 5px;border-bottom:1px solid var(--line);font-variant-numeric:tabu
   </section>
 </main>
 
-<button class="fab" onclick="openTx()">+</button>
+<button class="fab" id="fab" onclick="fabTap()">+</button>
 
 <nav>
   <button class="on" data-v="home" onclick="go('home')"><svg viewBox="0 0 24 24"><path d="M3 10l9-7 9 7v10a1 1 0 01-1 1h-5v-7H9v7H4a1 1 0 01-1-1z"/></svg>Home</button>
@@ -281,6 +287,54 @@ td{padding:9px 5px;border-bottom:1px solid var(--line);font-variant-numeric:tabu
   </div>
 </div>
 
+<!-- log a bill payment -->
+<div class="sheet" id="sh-billlog" onclick="if(event.target===this)close_('sh-billlog')">
+  <div class="inner"><div class="grab"></div>
+    <h2 style="margin:0 0 4px;font-size:19px" id="bl-ttl">Log bill</h2>
+    <p style="color:var(--dim);font-size:13px;margin:2px 0 0" id="bl-sub"></p>
+    <label>Amount actually charged</label>
+    <input id="bl-amt" type="number" inputmode="decimal" step="0.01">
+    <label>Note (optional)</label>
+    <input id="bl-note" placeholder="usage spike, rate change...">
+    <button class="btn" onclick="saveBillLog()">Save</button>
+    <button class="btn ghost" onclick="clearBillLog()">Clear logged amount</button>
+    <button class="btn ghost" onclick="close_('sh-billlog')">Cancel</button>
+  </div>
+</div>
+
+<!-- add / edit a bill -->
+<div class="sheet" id="sh-billedit" onclick="if(event.target===this)close_('sh-billedit')">
+  <div class="inner"><div class="grab"></div>
+    <h2 style="margin:0 0 4px;font-size:19px" id="be-ttl">Edit bill</h2>
+    <label>Name</label><input id="be-name" placeholder="e.g. Renters insurance">
+    <label>Typical amount</label>
+    <input id="be-amt" type="number" inputmode="decimal" step="0.01" placeholder="0.00">
+    <label>Day of month it's due</label>
+    <input id="be-day" type="number" inputmode="numeric" min="1" max="31" placeholder="1-31">
+    <label>How often</label>
+    <select id="be-freq"><option>Monthly</option><option>Quarterly</option></select>
+    <label>Category</label>
+    <div class="chips" id="be-cats"></div>
+    <label>Status</label>
+    <div class="chips" id="be-active">
+      <button class="chip" data-a="1" onclick="pickActive(1)">Active</button>
+      <button class="chip" data-a="0" onclick="pickActive(0)">Paused</button>
+    </div>
+    <button class="btn" onclick="saveBillEdit()">Save</button>
+    <button class="btn danger" onclick="deleteBill()" id="be-del">Delete this bill</button>
+    <button class="btn ghost" onclick="close_('sh-billedit')">Cancel</button>
+  </div>
+</div>
+
+<!-- FAB action menu -->
+<div class="sheet" id="sh-fab" onclick="if(event.target===this)close_('sh-fab')">
+  <div class="inner"><div class="grab"></div>
+    <h2 style="margin:0 0 10px;font-size:19px" id="fab-ttl">Add</h2>
+    <div id="fab-actions"></div>
+    <button class="btn ghost" onclick="close_('sh-fab')">Cancel</button>
+  </div>
+</div>
+
 <!-- balances -->
 <div class="sheet" id="sh-bal" onclick="if(event.target===this)close_('sh-bal')">
   <div class="inner"><div class="grab"></div>
@@ -295,7 +349,7 @@ td{padding:9px 5px;border-bottom:1px solid var(--line);font-variant-numeric:tabu
 const DEFAULTS = {
   setup:{savingsGoal:0, efMonths:6, cushion:0},
   accounts:[], debts:[], income:[], bills:[], variable:[],
-  transactions:[], paychecks:{}, funded:{}, balances:{}, syncUrl:"", configured:false
+  transactions:[], paychecks:{}, billActuals:{}, funded:{}, balances:{}, syncUrl:"", configured:false
 };
 const QUARTER_MONTHS=[9,12,3,6];
 const CATS=["Groceries","Gas","Personal care","Restaurants / takeout","Other food",
@@ -466,24 +520,47 @@ function pickDay(k,quiet){
   if(!quiet) $("dayttl").scrollIntoView({behavior:"smooth",block:"nearest"});
 }
 
+function billKey(d,name){ return iso(d)+"|"+name; }
+
 function renderBills(){
-  $("billlist").innerHTML=billsFor(cur).map(b=>{
-    const k=iso(b.date)+"|"+b.name, on=!!DB.funded[k];
-    return `<div class="row">
-      <div class="nm"><b>${b.name}</b><small>Due ${b.date.toLocaleDateString("en-US",{month:"short",day:"numeric"})} &middot; ${b.category}</small></div>
-      <span class="amt">${money(b.amount)}</span>
-      <button class="chk ${on?"on":""}" onclick="toggleFund('${k}')">&#10003;</button></div>`;}).join("")
-    ||'<div class="empty">No bills this month.</div>';
+  const bills=billsFor(cur);
+  $("billlist").innerHTML = bills.length ? bills.map(b=>{
+    const k=billKey(b.date,b.name), rec=DB.billActuals[k], on=!!DB.funded[k];
+    const got = rec && rec.actual!=null;
+    const diff = got ? rec.actual-b.amount : 0;
+    const drift = (got && Math.abs(diff)>0.005)
+      ? ` &middot; <span class="${diff>0?"neg":"pos"}">${diff>0?"+":""}${money(diff)}</span>` : "";
+    return `<div class="row" onclick="openBillLog('${k.replace(/'/g,"\\'")}',${b.amount})" style="cursor:pointer">
+      <div class="nm"><b>${b.name}</b><small>Due ${b.date.toLocaleDateString("en-US",{month:"short",day:"numeric"})}
+        &middot; expected ${money(b.amount)}${drift}</small></div>
+      <span class="amt ${got?"":"muted"}">${got?money(rec.actual):'<span style="color:var(--dim);font-weight:400;font-size:13px">not logged</span>'}</span>
+      <button class="chk ${on?"on":""}" title="Funded"
+        onclick="event.stopPropagation();toggleFund('${k.replace(/'/g,"\\'")}')">&#10003;</button>
+    </div>`;}).join("") : '<div class="empty">No bills this month.</div>';
+
   $("paylist").innerHTML=paysFor(cur).map(p=>{
-    const k=iso(p.date)+"|"+p.name, rec=DB.paychecks[k];
+    const k=billKey(p.date,p.name), rec=DB.paychecks[k];
     const got=rec&&rec.actual!=null;
     const diff=got?rec.actual-p.amount:0;
-    return `<div class="row">
+    const drift=(got&&Math.abs(diff)>0.005)
+      ? ` &middot; <span class="${diff>0?"pos":"neg"}">${diff>0?"+":""}${money(diff)}</span>` : "";
+    return `<div class="row" onclick="openPay('${k.replace(/'/g,"\\'")}','${p.name}','${iso(p.date)}',${p.amount})" style="cursor:pointer">
       <div class="nm"><b>${p.name}</b><small>${p.date.toLocaleDateString("en-US",{month:"short",day:"numeric"})}
-        &middot; expected ${money(p.amount)}${got&&Math.abs(diff)>0.005?` &middot; <span class="${diff>0?"pos":"neg"}">${diff>0?"+":""}${money(diff)}</span>`:""}</small></div>
-      <span class="amt ${got?"pos":""}">${got?money(rec.actual):"&mdash;"}</span>
-      <button class="chk ${got?"on":""}" onclick="openPay('${k}','${p.name}','${iso(p.date)}',${p.amount})">&#10003;</button>
+        &middot; expected ${money(p.amount)}${drift}</small></div>
+      <span class="amt ${got?"pos":""}">${got?money(rec.actual):'<span style="color:var(--dim);font-weight:400;font-size:13px">not logged</span>'}</span>
       </div>`;}).join("")||'<div class="empty">No paychecks this month.</div>';
+
+  renderBillDefs();
+}
+
+function renderBillDefs(){
+  $("billdefs").innerHTML = DB.bills.length ? DB.bills.map((b,i)=>
+    `<div class="row" onclick="openBillEdit(${i})" style="cursor:pointer">
+      <div class="nm"><b>${b.name}${b.active===false?' <span class="tag">paused</span>':''}</b>
+        <small>Day ${b.day} &middot; ${b.freq} &middot; ${b.category}</small></div>
+      <span class="amt">${money(b.amount)}</span>
+      <span style="color:var(--dim);font-size:18px;padding:0 2px">&#8250;</span>
+    </div>`).join("") : '<div class="empty">No bills yet. Use + to add one.</div>';
 }
 
 function renderHist(){
@@ -534,12 +611,12 @@ function checkOnboard(){
 function go(v){ document.querySelectorAll(".view").forEach(s=>s.classList.remove("on"));
   $("v-"+v).classList.add("on");
   document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("on",b.dataset.v===v));
-  window.scrollTo(0,0); }
+  curView=v; syncFab(); window.scrollTo(0,0); }
 function shiftMonth(n){ cur=new Date(cur.getFullYear(),cur.getMonth()+n,1); selDay=null; render(); }
 function close_(id){ $(id).classList.remove("on"); }
 function toggleFund(k){ DB.funded[k]=!DB.funded[k]; save(); render(); }
 function openTx(){
-  $("tx-date").value=iso(new Date(2026,7,9)); $("tx-amt").value=""; $("tx-item").value="";
+  $("tx-date").value=(curView==="cal"&&selDay)?selDay:iso(new Date(2026,7,9)); $("tx-amt").value=""; $("tx-item").value="";
   $("tx-cats").innerHTML=CATS.map(c=>`<button class="chip ${c===txCat?"on":""}" onclick="pickCat('${c.replace(/'/g,"\\'")}')">${c}</button>`).join("");
   $("sh-tx").classList.add("on"); setTimeout(()=>$("tx-amt").focus(),260);
 }
@@ -579,6 +656,94 @@ function saveBal(){
     const v=parseFloat(i.value); if(!isNaN(v)) DB.balances[i.dataset.bal]=v; });
   save(); close_("sh-bal"); render();
 }
+/* ---------- tab-aware floating button ---------- */
+const FAB = {
+  home:  {label:"Add", actions:[["Add spending","openTx()"],["Log a paycheck","jumpPay()"],["Update balances","openBal()"]]},
+  cal:   {label:"Add spending", actions:[["Add spending","openTx()"]]},
+  bills: {label:"Add", actions:[["Add a bill","openBillEdit(-1)"],["Add spending","openTx()"]]},
+  hist:  {label:"Update balances", actions:[["Update balances","openBal()"]]},
+  set:   null
+};
+let curView="home";
+function syncFab(){
+  const cfg=FAB[curView], el=$("fab");
+  el.style.display = cfg ? "block" : "none";
+  if(cfg) el.title = cfg.label;
+}
+function fabTap(){
+  const cfg=FAB[curView]; if(!cfg) return;
+  if(cfg.actions.length===1){ eval(cfg.actions[0][1]); return; }
+  $("fab-ttl").textContent=cfg.label;
+  $("fab-actions").innerHTML=cfg.actions.map(([lab,fn])=>
+    `<button class="btn ghost" style="margin-top:8px" onclick="close_('sh-fab');${fn}">${lab}</button>`).join("");
+  $("sh-fab").classList.add("on");
+}
+function jumpPay(){ go("bills"); setTimeout(()=>$("paylist").scrollIntoView({behavior:"smooth",block:"center"}),120); }
+
+/* ---------- logging what a bill actually cost ---------- */
+let billLogKey=null;
+function openBillLog(k,expected){
+  billLogKey=k;
+  const [d,name]=k.split("|");
+  $("bl-ttl").textContent=name;
+  $("bl-sub").textContent=`${parse(d).toLocaleDateString("en-US",{month:"long",day:"numeric"})} · expected ${money(expected)}`;
+  const rec=DB.billActuals[k];
+  $("bl-amt").value=(rec&&rec.actual!=null)?rec.actual:expected.toFixed(2);
+  $("bl-note").value=(rec&&rec.note)||"";
+  $("sh-billlog").classList.add("on"); setTimeout(()=>$("bl-amt").select(),260);
+}
+function saveBillLog(){
+  const a=parseFloat($("bl-amt").value);
+  if(isNaN(a)){ alert("Enter an amount."); return; }
+  DB.billActuals[billLogKey]={actual:+a.toFixed(2),note:$("bl-note").value};
+  DB.funded[billLogKey]=true;
+  save(); close_("sh-billlog"); render();
+}
+function clearBillLog(){
+  delete DB.billActuals[billLogKey];
+  save(); close_("sh-billlog"); render();
+}
+
+/* ---------- add / edit / delete a bill ---------- */
+let billIdx=-1, beCat="Subscriptions", beActive=1;
+function openBillEdit(i){
+  billIdx=i;
+  const b = i>=0 ? DB.bills[i] : {name:"",amount:"",day:"",freq:"Monthly",category:"Subscriptions",active:true};
+  $("be-ttl").textContent = i>=0 ? "Edit bill" : "Add a bill";
+  $("be-name").value=b.name; $("be-amt").value=b.amount;
+  $("be-day").value=b.day;   $("be-freq").value=b.freq||"Monthly";
+  beCat=b.category||"Subscriptions"; beActive=(b.active===false)?0:1;
+  $("be-cats").innerHTML=CATS.map(c=>
+    `<button class="chip ${c===beCat?"on":""}" onclick="pickBeCat('${c.replace(/'/g,"\\'")}')">${c}</button>`).join("");
+  pickActive(beActive);
+  $("be-del").style.display = i>=0 ? "block" : "none";
+  $("sh-billedit").classList.add("on");
+  if(i<0) setTimeout(()=>$("be-name").focus(),260);
+}
+function pickBeCat(c){ beCat=c;
+  document.querySelectorAll("#be-cats .chip").forEach(b=>b.classList.toggle("on",b.textContent===c)); }
+function pickActive(v){ beActive=v;
+  document.querySelectorAll("#be-active .chip").forEach(b=>b.classList.toggle("on",+b.dataset.a===v)); }
+function saveBillEdit(){
+  const name=$("be-name").value.trim();
+  const amt=parseFloat($("be-amt").value);
+  const day=parseInt($("be-day").value,10);
+  if(!name){ alert("Give the bill a name."); return; }
+  if(isNaN(amt)||amt<0){ alert("Enter a valid amount."); return; }
+  if(isNaN(day)||day<1||day>31){ alert("Due day must be between 1 and 31."); return; }
+  const rec={name,amount:+amt.toFixed(2),day,freq:$("be-freq").value,category:beCat,active:!!beActive};
+  if(billIdx>=0){ rec.restart=DB.bills[billIdx].restart; DB.bills[billIdx]=rec; }
+  else DB.bills.push(rec);
+  DB.bills.sort((a,b)=>a.day-b.day);
+  save(); close_("sh-billedit"); render();
+}
+function deleteBill(){
+  const b=DB.bills[billIdx];
+  if(!confirm(`Delete "${b.name}"? Amounts you already logged for it stay in your history.`)) return;
+  DB.bills.splice(billIdx,1);
+  save(); close_("sh-billedit"); render();
+}
+
 function exportJson(){
   const b=new Blob([JSON.stringify(DB,null,2)],{type:"application/json"});
   const a=document.createElement("a"); a.href=URL.createObjectURL(b);
@@ -594,7 +759,7 @@ function importJson(e){
 function wipe(){ if(confirm("Reset everything to the starting values?")){
   DB=structuredClone(DEFAULTS); save(); render(); } }
 
-load(); render(); checkOnboard();
+load(); render(); checkOnboard(); syncFab();
 </script>
 <script>
 if("serviceWorker" in navigator){
