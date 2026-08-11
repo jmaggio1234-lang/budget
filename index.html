@@ -335,6 +335,11 @@ td{padding:9px 5px;border-bottom:1px solid var(--line);font-variant-numeric:tabu
     <select id="be-freq"><option>Monthly</option><option>Quarterly</option></select>
     <label>Category</label>
     <div class="chips" id="be-cats"></div>
+    <label>Starts on <span style="text-transform:none;font-weight:400">(optional)</span></label>
+    <input id="be-restart" type="date">
+    <p style="color:var(--dim);font-size:12px;margin:6px 0 0">
+      Leave blank if it just runs every month. Set it when a bill starts fresh or
+      comes back after a break &mdash; nothing shows before this date.</p>
     <label>Status</label>
     <div class="chips" id="be-active">
       <button class="chip" data-a="1" onclick="pickActive(1)">Active</button>
@@ -438,6 +443,9 @@ function migrate(){
     if(a.closed===undefined) a.closed=false;
   });
   DB.income.forEach(j=>{ if(!j.id) j.id=newId("jb"); });
+  /* A restart date only ever meant "it comes back on this day", so a bill
+     carrying one should not also be sitting paused. */
+  DB.bills.forEach(b=>{ if(b.restart && b.active===false) b.active=true; });
   const byName={}; DB.accounts.forEach(a=>byName[a.name]=a.id);
   const fallback=(DB.accounts.find(a=>a.type==="checking")||DB.accounts[0]||{}).id||"";
   DB.transactions.forEach(t=>{ if(!t.accountId) t.accountId=byName[t.account]||fallback; });
@@ -493,8 +501,8 @@ function billsFor(d){
   DB.bills.forEach(b=>{
     if(b.freq==="Quarterly" && !QUARTER_MONTHS.includes(m)) return;
     const day=Math.min(b.day,last), date=new Date(y,m-1,day);
-    if(b.restart){ if(date<parse(b.restart)) return; }
-    else if(!b.active) return;
+    if(!b.active) return;                              // paused beats everything
+    if(b.restart && date<parse(b.restart)) return;     // and it hasn't started yet
     out.push({date,name:b.name,amount:b.amount,category:b.category,type:"Bill"});
   });
   return out.sort((a,b)=>a.date-b.date);
@@ -670,7 +678,10 @@ function renderBillDefs(){
   $("billdefs").innerHTML = DB.bills.length ? DB.bills.map((b,i)=>
     `<div class="row" onclick="openBillEdit(${i})" style="cursor:pointer">
       <div class="nm"><b>${b.name}${b.active===false?' <span class="tag">paused</span>':''}</b>
-        <small>Day ${b.day} &middot; ${b.freq} &middot; ${b.category}</small></div>
+        <small>Day ${b.day} &middot; ${b.freq} &middot; ${b.category}${
+          b.restart&&parse(b.restart)>new Date(2026,7,11)
+            ? " &middot; starts "+parse(b.restart).toLocaleDateString("en-US",{month:"short",day:"numeric"})
+            : ""}</small></div>
       <span class="amt">${money(b.amount)}</span>
       <span style="color:var(--dim);font-size:18px;padding:0 2px">&#8250;</span>
     </div>`).join("") : '<div class="empty">No bills yet. Use + to add one.</div>';
@@ -885,6 +896,7 @@ function openBillEdit(i){
   $("be-ttl").textContent = i>=0 ? "Edit bill" : "Add a bill";
   $("be-name").value=b.name; $("be-amt").value=b.amount;
   $("be-day").value=b.day;   $("be-freq").value=b.freq||"Monthly";
+  $("be-restart").value=b.restart||"";
   beCat=b.category||"Subscriptions"; beActive=(b.active===false)?0:1;
   $("be-cats").innerHTML=CATS.map(c=>
     `<button class="chip ${c===beCat?"on":""}" onclick="pickBeCat('${c.replace(/'/g,"\\'")}')">${c}</button>`).join("");
@@ -905,10 +917,12 @@ function saveBillEdit(){
   if(isNaN(amt)||amt<0){ alert("Enter a valid amount."); return; }
   if(isNaN(day)||day<1||day>31){ alert("Due day must be between 1 and 31."); return; }
   const rec={name,amount:+amt.toFixed(2),day,freq:$("be-freq").value,category:beCat,active:!!beActive};
+  const start=$("be-restart").value;
+  if(start) rec.restart=start;                 // blank clears it
   if(billIdx>=0){
     const old=DB.bills[billIdx].name;
     remapKeyed(DB.funded,old,name); remapKeyed(DB.billActuals,old,name);
-    rec.restart=DB.bills[billIdx].restart; DB.bills[billIdx]=rec;
+    DB.bills[billIdx]=rec;
   }
   else DB.bills.push(rec);
   DB.bills.sort((a,b)=>a.day-b.day);
