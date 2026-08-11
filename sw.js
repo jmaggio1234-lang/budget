@@ -1,6 +1,6 @@
 /* Budget app service worker — offline support.
    Bump CACHE when you change any file, or phones keep serving the old one. */
-const CACHE = 'budget-v3';
+const CACHE = 'budget-v4';
 const ASSETS = [
   './', './index.html', './manifest.webmanifest',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png'

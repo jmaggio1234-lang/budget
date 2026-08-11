@@ -233,6 +233,11 @@ td{padding:9px 5px;border-bottom:1px solid var(--line);font-variant-numeric:tabu
       <div id="acctlist"></div>
     </div>
     <div class="card">
+      <h2>Account activity</h2>
+      <div class="chips" id="acct-tabs" style="margin-bottom:10px"></div>
+      <div id="acctlog"></div>
+    </div>
+    <div class="card">
       <h2>Goals</h2><div id="goals"></div>
     </div>
   </section>
@@ -438,6 +443,13 @@ function migrate(){
   DB.transactions.forEach(t=>{ if(!t.accountId) t.accountId=byName[t.account]||fallback; });
 }
 
+/* name to show against a transaction — falls back to whatever was stored
+   if the account itself has since been deleted */
+function txAcctName(t){
+  const a=DB.accounts.find(x=>x.id===t.accountId);
+  return a?a.name:(t.account||"unassigned");
+}
+
 /* ---- account helpers ---- */
 const acctById   = id => DB.accounts.find(a=>a.id===id);
 const openAccts  = ()  => DB.accounts.filter(a=>!a.closed);
@@ -549,8 +561,7 @@ function render(){
   $("s-bar").style.background=pct>100?"var(--neg)":pct>85?"var(--warn)":"var(--acc)";
 
   // cushion
-  const chkAcct=DB.accounts.find(a=>a.name==="Checking");
-  const chk=DB.balances.Checking??(chkAcct?chkAcct.balance:0);
+  const chk=openAccts().filter(a=>a.type==="checking").reduce((s,a)=>s+acctBal(a),0);
   const today=new Date(2026,7,9);
   const due=billsFor(cur).filter(b=>b.date>=today).reduce((s,b)=>s+b.amount,0);
   const after=chk-due, cush=DB.setup.cushion;
@@ -576,7 +587,7 @@ function render(){
   // recent
   const rec=txFor(cur).slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,8);
   $("recent").innerHTML= rec.length?rec.map(t=>`<div class="row">
-      <div class="nm"><b>${t.item||t.category}</b><small>${parse(t.date).toLocaleDateString("en-US",{month:"short",day:"numeric"})} &middot; ${t.category}</small></div>
+      <div class="nm"><b>${t.item||t.category}</b><small>${parse(t.date).toLocaleDateString("en-US",{month:"short",day:"numeric"})} &middot; ${t.category} &middot; ${txAcctName(t)}</small></div>
       <span class="amt">${money(t.amount)}</span>
       <button class="chk" style="border-color:transparent;color:var(--dim)" onclick="delTx('${t.id}')">&times;</button>
     </div>`).join(""):'<div class="empty">No spending logged yet this month.</div>';
@@ -616,7 +627,7 @@ function pickDay(k,quiet){
       <div class="nm"><b>${e.name}</b><small>${e.type}</small></div>
       <span class="amt ${e.type==="Paycheck"?"pos":""}">${money(e.amount)}</span></div>`).join("")
     + tx.map(t=>`<div class="row"><span class="dot" style="background:var(--dim)"></span>
-      <div class="nm"><b>${t.item||t.category}</b><small>logged</small></div>
+      <div class="nm"><b>${t.item||t.category}</b><small>${t.category} &middot; ${txAcctName(t)}</small></div>
       <span class="amt">${money(t.amount)}</span></div>`).join("")
     :'<div class="empty">Nothing on this day.</div>';
   if(!quiet) $("dayttl").scrollIntoView({behavior:"smooth",block:"nearest"});
@@ -680,7 +691,7 @@ function renderHist(){
   $("h-as").textContent=money0(as); $("h-li").textContent=money0(li);
   $("h-nw").textContent=money0(as-li);
   $("h-nw").className="v "+(as-li>=0?"pos":"neg");
-  renderAccts();
+  renderAccts(); renderAcctLog();
 }
 
 function renderAccts(){
@@ -696,6 +707,33 @@ function renderAccts(){
     </div>`;}).join("");
   $("acctlist").innerHTML=rows||'<div class="empty">No accounts yet. Use + to add one.</div>';
 }
+
+let logAcct=null;
+function renderAcctLog(){
+  const list=openAccts().filter(a=>a.type!=="asset");
+  if(!list.length){ $("acct-tabs").innerHTML=""; 
+    $("acctlog").innerHTML='<div class="empty">Add an account to see its activity.</div>'; return; }
+  if(!list.some(a=>a.id===logAcct)) logAcct=list[0].id;
+  $("acct-tabs").innerHTML=list.map(a=>
+    `<button class="chip ${a.id===logAcct?"on":""}" onclick="pickLogAcct('${a.id}')">${a.name}</button>`).join("");
+
+  const a=acctById(logAcct);
+  const tx=DB.transactions.filter(t=>t.accountId===logAcct&&sameMonth(parse(t.date),cur))
+                          .sort((x,y)=>y.date.localeCompare(x.date));
+  const total=tx.reduce((s,t)=>s+ +t.amount,0);
+  const head=`<div class="row" style="border-bottom:1px solid var(--line)">
+      <div class="nm"><b>${cur.toLocaleDateString("en-US",{month:"long",year:"numeric"})}</b>
+        <small>${tx.length} transaction${tx.length===1?"":"s"} &middot; balance ${money(acctBal(a))}</small></div>
+      <span class="amt ${isCredit(a)?"neg":""}">${money(total)}</span></div>`;
+  $("acctlog").innerHTML = head + (tx.length
+    ? tx.map(t=>`<div class="row">
+        <div class="nm"><b>${t.item||t.category}</b><small>${parse(t.date).toLocaleDateString("en-US",{month:"short",day:"numeric"})} &middot; ${t.category}</small></div>
+        <span class="amt">${money(t.amount)}</span>
+        <button class="chk" style="border-color:transparent;color:var(--dim)" onclick="delTx('${t.id}')">&times;</button>
+      </div>`).join("")
+    : `<div class="empty">Nothing on this account in ${cur.toLocaleDateString("en-US",{month:"long"})}.</div>`);
+}
+function pickLogAcct(id){ logAcct=id; renderAcctLog(); }
 
 function renderJobDefs(){
   $("jobdefs").innerHTML = DB.income.length ? DB.income.map((j,i)=>
