@@ -199,6 +199,12 @@ td{padding:9px 5px;border-bottom:1px solid var(--line);font-variant-numeric:tabu
       <h2>All bills &mdash; edit or remove</h2>
       <div id="billdefs"></div>
     </div>
+    <div class="card">
+      <h2>Jobs &mdash; rename or remove</h2>
+      <p style="color:var(--dim);font-size:12.5px;margin:-4px 0 8px">
+        Renaming a job carries every paycheck you've already logged with it.</p>
+      <div id="jobdefs"></div>
+    </div>
   </section>
 
   <!-- HISTORY -->
@@ -218,6 +224,13 @@ td{padding:9px 5px;border-bottom:1px solid var(--line);font-variant-numeric:tabu
       <div class="stat" style="margin-top:10px"><div class="l">Net worth</div>
         <div class="v" id="h-nw">$0</div></div>
       <button class="btn ghost" onclick="openBal()">Update balances</button>
+    </div>
+    <div class="card">
+      <h2>Accounts</h2>
+      <p style="color:var(--dim);font-size:12.5px;margin:-4px 0 8px">
+        Tap to rename, change balance, or close. Closed accounts drop out of net worth
+        but keep their history.</p>
+      <div id="acctlist"></div>
     </div>
     <div class="card">
       <h2>Goals</h2><div id="goals"></div>
@@ -264,8 +277,10 @@ td{padding:9px 5px;border-bottom:1px solid var(--line);font-variant-numeric:tabu
     <input id="tx-amt" type="number" inputmode="decimal" step="0.01" placeholder="0.00">
     <label>Category</label>
     <div class="chips" id="tx-cats"></div>
+    <label>Paid from</label>
+    <div class="chips" id="tx-accts"></div>
     <label>What was it</label>
-    <input id="tx-item" placeholder="e.g. Publix">
+    <input id="tx-item" placeholder="e.g. weekly shop">
     <label>Date</label>
     <input id="tx-date" type="date">
     <button class="btn" onclick="saveTx()">Save</button>
@@ -326,6 +341,40 @@ td{padding:9px 5px;border-bottom:1px solid var(--line);font-variant-numeric:tabu
   </div>
 </div>
 
+<!-- add / edit an account -->
+<div class="sheet" id="sh-acct" onclick="if(event.target===this)close_('sh-acct')">
+  <div class="inner"><div class="grab"></div>
+    <h2 style="margin:0 0 4px;font-size:19px" id="ac-ttl">Edit account</h2>
+    <label>Name</label><input id="ac-name" placeholder="e.g. Visa - everyday">
+    <label>Type</label>
+    <div class="chips" id="ac-types"></div>
+    <label id="ac-ballab">Current balance</label>
+    <input id="ac-bal" type="number" inputmode="decimal" step="0.01" placeholder="0.00">
+    <p style="color:var(--dim);font-size:12px;margin:6px 0 0" id="ac-hint"></p>
+    <button class="btn" onclick="saveAcct()">Save</button>
+    <button class="btn ghost" onclick="toggleClose()" id="ac-close">Close this account</button>
+    <button class="btn danger" onclick="deleteAcct()" id="ac-del">Delete permanently</button>
+    <button class="btn ghost" onclick="close_('sh-acct')">Cancel</button>
+  </div>
+</div>
+
+<!-- add / edit a job -->
+<div class="sheet" id="sh-job" onclick="if(event.target===this)close_('sh-job')">
+  <div class="inner"><div class="grab"></div>
+    <h2 style="margin:0 0 4px;font-size:19px" id="jb-ttl">Edit job</h2>
+    <label>Name</label><input id="jb-name" placeholder="e.g. Weekend job">
+    <label>Typical pay per check</label>
+    <input id="jb-amt" type="number" inputmode="decimal" step="0.01" placeholder="0.00">
+    <label>Paid every N days</label>
+    <input id="jb-days" type="number" inputmode="numeric" placeholder="14">
+    <label>First pay date</label>
+    <input id="jb-first" type="date">
+    <button class="btn" onclick="saveJob()">Save</button>
+    <button class="btn danger" onclick="deleteJob()" id="jb-del">Delete this job</button>
+    <button class="btn ghost" onclick="close_('sh-job')">Cancel</button>
+  </div>
+</div>
+
 <!-- FAB action menu -->
 <div class="sheet" id="sh-fab" onclick="if(event.target===this)close_('sh-fab')">
   <div class="inner"><div class="grab"></div>
@@ -356,11 +405,64 @@ const CATS=["Groceries","Gas","Personal care","Restaurants / takeout","Other foo
             "Subscriptions","Health","Transportation","Housing","Debt","Gifts / charity","Other"];
 
 /* ============================ STATE ============================ */
-let DB, cur=new Date(2026,7,1), selDay=null, txCat="Groceries";
+let DB, cur=new Date(2026,7,1), selDay=null, txCat="Groceries", txAcct="";
 const K="budget.v1";
 function load(){ try{DB=JSON.parse(localStorage.getItem(K))||structuredClone(DEFAULTS);}
                  catch(e){DB=structuredClone(DEFAULTS);}
-                 for(const k in DEFAULTS) if(!(k in DB)) DB[k]=structuredClone(DEFAULTS[k]); }
+                 for(const k in DEFAULTS) if(!(k in DB)) DB[k]=structuredClone(DEFAULTS[k]);
+                 migrate(); }
+
+/* Older saves have no ids and no account types. Fill them in once, in place,
+   so data made before accounts existed keeps working. */
+let _seq=0;
+const newId = pre => pre+Date.now().toString(36)+(++_seq);
+const ACCT_TYPES=[["checking","Checking"],["savings","Savings"],["credit","Credit card"],
+                  ["cash","Cash"],["asset","Other asset"]];
+function guessType(n){
+  const s=(n||"").toLowerCase();
+  if(/credit|visa|mastercard|amex|card/.test(s))      return "credit";
+  if(/check/.test(s))                                  return "checking";
+  if(/saving|money market|hysa/.test(s))               return "savings";
+  if(/cash/.test(s))                                   return "cash";
+  return "asset";
+}
+function migrate(){
+  DB.accounts.forEach(a=>{
+    if(!a.id)   a.id=newId("ac");
+    if(!a.type) a.type=guessType(a.name);
+    if(a.closed===undefined) a.closed=false;
+  });
+  DB.income.forEach(j=>{ if(!j.id) j.id=newId("jb"); });
+  const byName={}; DB.accounts.forEach(a=>byName[a.name]=a.id);
+  const fallback=(DB.accounts.find(a=>a.type==="checking")||DB.accounts[0]||{}).id||"";
+  DB.transactions.forEach(t=>{ if(!t.accountId) t.accountId=byName[t.account]||fallback; });
+}
+
+/* ---- account helpers ---- */
+const acctById   = id => DB.accounts.find(a=>a.id===id);
+const openAccts  = ()  => DB.accounts.filter(a=>!a.closed);
+const isCredit   = a  => a && a.type==="credit";
+const acctBal    = a  => (DB.balances[a.name]!=null?DB.balances[a.name]:(a.balance||0));
+const typeLabel  = t  => (ACCT_TYPES.find(x=>x[0]===t)||["","Account"])[1];
+/* on a credit card a "balance" is money owed, so it counts against you */
+function totalAssets(){ return openAccts().filter(a=>!isCredit(a)).reduce((s,a)=>s+acctBal(a),0); }
+function totalDebts(){
+  return openAccts().filter(isCredit).reduce((s,a)=>s+acctBal(a),0)
+       + DB.debts.reduce((s,x)=>s+(DB.balances[x.name]!=null?DB.balances[x.name]:x.current),0);
+}
+/* what has been charged to one account inside a given month */
+function chargedOn(accId,d){
+  return DB.transactions.filter(t=>t.accountId===accId&&sameMonth(parse(t.date),d))
+                        .reduce((s,t)=>s+ +t.amount,0);
+}
+/* renaming must carry the keyed records with it, or they orphan silently */
+function remapKeyed(obj,oldName,newName){
+  if(oldName===newName) return;
+  Object.keys(obj).forEach(k=>{
+    const i=k.indexOf("|");
+    if(k.slice(i+1)===oldName){ obj[k.slice(0,i)+"|"+newName]=obj[k]; delete obj[k]; }
+  });
+}
 function save(){ localStorage.setItem(K,JSON.stringify(DB)); push(); }
 
 /* ============================ HELPERS ============================ */
@@ -550,7 +652,7 @@ function renderBills(){
       <span class="amt ${got?"pos":""}">${got?money(rec.actual):'<span style="color:var(--dim);font-weight:400;font-size:13px">not logged</span>'}</span>
       </div>`;}).join("")||'<div class="empty">No paychecks this month.</div>';
 
-  renderBillDefs();
+  renderBillDefs(); renderJobDefs();
 }
 
 function renderBillDefs(){
@@ -574,21 +676,44 @@ function renderHist(){
     d=new Date(d.getFullYear(),d.getMonth()+1,1);
   }
   $("histbody").innerHTML=rows||`<tr><td colspan="4" class="empty">Log a paycheck or some spending to start your history.</td></tr>`;
-  const as=DB.accounts.reduce((s,a)=>s+(DB.balances[a.name]??a.balance),0);
-  const li=DB.debts.reduce((s,x)=>s+(DB.balances[x.name]??x.current),0);
+  const as=totalAssets(), li=totalDebts();
   $("h-as").textContent=money0(as); $("h-li").textContent=money0(li);
   $("h-nw").textContent=money0(as-li);
   $("h-nw").className="v "+(as-li>=0?"pos":"neg");
+  renderAccts();
+}
+
+function renderAccts(){
+  const rows=DB.accounts.map((a,i)=>{
+    const bal=acctBal(a), chg=chargedOn(a.id,cur);
+    const sub=[typeLabel(a.type)];
+    if(a.closed) sub.push("closed");
+    if(chg>0) sub.push((isCredit(a)?"charged ":"spent ")+money(chg)+" this month");
+    return `<div class="row" onclick="openAcct(${i})" style="cursor:pointer;${a.closed?"opacity:.5":""}">
+      <div class="nm"><b>${a.name}</b><small>${sub.join(" &middot; ")}</small></div>
+      <span class="amt ${isCredit(a)&&bal>0?"neg":""}">${isCredit(a)&&bal>0?"-":""}${money(bal)}</span>
+      <span style="color:var(--dim);font-size:18px;padding:0 2px">&#8250;</span>
+    </div>`;}).join("");
+  $("acctlist").innerHTML=rows||'<div class="empty">No accounts yet. Use + to add one.</div>';
+}
+
+function renderJobDefs(){
+  $("jobdefs").innerHTML = DB.income.length ? DB.income.map((j,i)=>
+    `<div class="row" onclick="openJob(${i})" style="cursor:pointer">
+      <div class="nm"><b>${j.name}</b><small>${money(j.perCheck)} every ${j.everyDays} days
+        &middot; from ${parse(j.firstPay).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"})}</small></div>
+      <span style="color:var(--dim);font-size:18px;padding:0 2px">&#8250;</span>
+    </div>`).join("") : '<div class="empty">No jobs yet. Use + to add one.</div>';
 }
 function renderGoals(){
-  const savAcct=DB.accounts.find(a=>a.name==="Savings");
-  const sav=DB.balances.Savings??(savAcct?savAcct.balance:0);
-  const as=DB.accounts.reduce((s,a)=>s+(DB.balances[a.name]??a.balance),0);
-  const li=DB.debts.reduce((s,x)=>s+(DB.balances[x.name]??x.current),0);
+  const sav=openAccts().filter(a=>a.type==="savings").reduce((s,a)=>s+acctBal(a),0);
+  const as=totalAssets(), li=totalDebts();
   const ef=budgetFor(cur)*DB.setup.efMonths;
   const g=[["Savings goal",sav,DB.setup.savingsGoal]];
-  DB.debts.forEach(d=>{const paid=d.original-(DB.balances[d.name]??d.current);
+  DB.debts.forEach(d=>{const paid=d.original-(DB.balances[d.name]!=null?DB.balances[d.name]:d.current);
     g.push([d.name+" paid off",paid,d.original]);});
+  openAccts().filter(isCredit).forEach(a=>{
+    const bal=acctBal(a); if(bal>0) g.push([a.name+" cleared",0,bal]);});
   g.push(["Net worth $10,000",as-li,10000],
          [`${DB.setup.efMonths}-month emergency fund`,sav,ef]);
   $("goals").innerHTML=g.map(([n,c,t])=>{
@@ -618,15 +743,25 @@ function toggleFund(k){ DB.funded[k]=!DB.funded[k]; save(); render(); }
 function openTx(){
   $("tx-date").value=(curView==="cal"&&selDay)?selDay:iso(new Date(2026,7,9)); $("tx-amt").value=""; $("tx-item").value="";
   $("tx-cats").innerHTML=CATS.map(c=>`<button class="chip ${c===txCat?"on":""}" onclick="pickCat('${c.replace(/'/g,"\\'")}')">${c}</button>`).join("");
+  const spend=openAccts().filter(a=>a.type!=="asset");
+  if(!spend.some(a=>a.id===txAcct)) txAcct=(spend[0]||{}).id||"";
+  $("tx-accts").innerHTML = spend.length
+    ? spend.map(a=>`<button class="chip ${a.id===txAcct?"on":""}" onclick="pickAcct('${a.id}')">${a.name}</button>`).join("")
+    : '<span style="color:var(--dim);font-size:13px">No accounts yet &mdash; add one on the History tab.</span>';
   $("sh-tx").classList.add("on"); setTimeout(()=>$("tx-amt").focus(),260);
 }
+function pickAcct(id){ txAcct=id;
+  document.querySelectorAll("#tx-accts .chip").forEach(b=>
+    b.classList.toggle("on",b.getAttribute("onclick").indexOf("'"+id+"'")>-1)); }
 function pickCat(c){ txCat=c;
   document.querySelectorAll("#tx-cats .chip").forEach(b=>b.classList.toggle("on",b.textContent===c)); }
 function saveTx(){
   const a=parseFloat($("tx-amt").value);
   if(!a||a<=0){ alert("Enter an amount."); return; }
+  const acc=acctById(txAcct);
   DB.transactions.push({id:Date.now().toString(36),date:$("tx-date").value,
-    item:$("tx-item").value||txCat,category:txCat,amount:+a.toFixed(2),account:"Checking",note:""});
+    item:$("tx-item").value||txCat,category:txCat,amount:+a.toFixed(2),
+    accountId:txAcct,account:acc?acc.name:"",note:""});
   save(); close_("sh-tx"); render();
 }
 function delTx(id){ DB.transactions=DB.transactions.filter(t=>t.id!==id); save(); render(); }
@@ -645,8 +780,8 @@ function savePay(){
   save(); close_("sh-pay"); render();
 }
 function openBal(){
-  const items=[...DB.accounts.map(a=>[a.name,DB.balances[a.name]??a.balance]),
-               ...DB.debts.map(d=>[d.name,DB.balances[d.name]??d.current])];
+  const items=[...openAccts().map(a=>[a.name,acctBal(a)]),
+               ...DB.debts.map(d=>[d.name,DB.balances[d.name]!=null?DB.balances[d.name]:d.current])];
   $("bal-fields").innerHTML=items.map(([n,v])=>
     `<label>${n}</label><input type="number" inputmode="decimal" step="0.01" data-bal="${n}" value="${v}">`).join("");
   $("sh-bal").classList.add("on");
@@ -660,8 +795,8 @@ function saveBal(){
 const FAB = {
   home:  {label:"Add", actions:[["Add spending","openTx()"],["Log a paycheck","jumpPay()"],["Update balances","openBal()"]]},
   cal:   {label:"Add spending", actions:[["Add spending","openTx()"]]},
-  bills: {label:"Add", actions:[["Add a bill","openBillEdit(-1)"],["Add spending","openTx()"]]},
-  hist:  {label:"Update balances", actions:[["Update balances","openBal()"]]},
+  bills: {label:"Add", actions:[["Add a bill","openBillEdit(-1)"],["Add a job","openJob(-1)"],["Add spending","openTx()"]]},
+  hist:  {label:"Add", actions:[["Add an account","openAcct(-1)"],["Update balances","openBal()"]]},
   set:   null
 };
 let curView="home";
@@ -732,7 +867,11 @@ function saveBillEdit(){
   if(isNaN(amt)||amt<0){ alert("Enter a valid amount."); return; }
   if(isNaN(day)||day<1||day>31){ alert("Due day must be between 1 and 31."); return; }
   const rec={name,amount:+amt.toFixed(2),day,freq:$("be-freq").value,category:beCat,active:!!beActive};
-  if(billIdx>=0){ rec.restart=DB.bills[billIdx].restart; DB.bills[billIdx]=rec; }
+  if(billIdx>=0){
+    const old=DB.bills[billIdx].name;
+    remapKeyed(DB.funded,old,name); remapKeyed(DB.billActuals,old,name);
+    rec.restart=DB.bills[billIdx].restart; DB.bills[billIdx]=rec;
+  }
   else DB.bills.push(rec);
   DB.bills.sort((a,b)=>a.day-b.day);
   save(); close_("sh-billedit"); render();
@@ -742,6 +881,107 @@ function deleteBill(){
   if(!confirm(`Delete "${b.name}"? Amounts you already logged for it stay in your history.`)) return;
   DB.bills.splice(billIdx,1);
   save(); close_("sh-billedit"); render();
+}
+
+/* ---------- accounts ---------- */
+let acctIdx=-1, acType="checking";
+function openAcct(i){
+  acctIdx=i;
+  const a = i>=0 ? DB.accounts[i] : {name:"",type:"checking",balance:"",closed:false};
+  $("ac-ttl").textContent = i>=0 ? "Edit account" : "Add an account";
+  $("ac-name").value=a.name;
+  $("ac-bal").value = i>=0 ? acctBal(a) : "";
+  acType=a.type||"checking"; paintTypes();
+  $("ac-close").style.display = i>=0 ? "block" : "none";
+  $("ac-del").style.display   = i>=0 ? "block" : "none";
+  $("ac-close").textContent   = (i>=0 && a.closed) ? "Reopen this account" : "Close this account";
+  $("sh-acct").classList.add("on");
+  if(i<0) setTimeout(()=>$("ac-name").focus(),260);
+}
+function paintTypes(){
+  $("ac-types").innerHTML=ACCT_TYPES.map(([v,l])=>
+    `<button class="chip ${v===acType?"on":""}" onclick="pickType('${v}')">${l}</button>`).join("");
+  $("ac-ballab").textContent = acType==="credit" ? "Current balance owed" : "Current balance";
+  $("ac-hint").textContent = acType==="credit"
+    ? "Enter what you owe as a positive number. It counts against your net worth, and spending you tag to this card adds to what lands on the next statement."
+    : acType==="asset" ? "Assets don't appear when logging spending."
+    : "Spending you tag to this account is tracked against it.";
+}
+function pickType(v){ acType=v; paintTypes(); }
+function saveAcct(){
+  const name=$("ac-name").value.trim();
+  const bal=parseFloat($("ac-bal").value);
+  if(!name){ alert("Give the account a name."); return; }
+  if(DB.accounts.some((a,i)=>i!==acctIdx && a.name.toLowerCase()===name.toLowerCase())){
+    alert("You already have an account with that name."); return; }
+  if(isNaN(bal)){ alert("Enter a balance (0 is fine)."); return; }
+  if(acctIdx>=0){
+    const a=DB.accounts[acctIdx], old=a.name;
+    if(old!==name){
+      if(DB.balances[old]!=null){ DB.balances[name]=DB.balances[old]; delete DB.balances[old]; }
+      DB.transactions.forEach(t=>{ if(t.accountId===a.id) t.account=name; });
+    }
+    a.name=name; a.type=acType; a.balance=+bal.toFixed(2);
+    DB.balances[name]=+bal.toFixed(2);
+  } else {
+    const a={id:newId("ac"),name,type:acType,balance:+bal.toFixed(2),closed:false};
+    DB.accounts.push(a); DB.balances[name]=a.balance;
+  }
+  save(); close_("sh-acct"); render();
+}
+function toggleClose(){
+  const a=DB.accounts[acctIdx];
+  a.closed=!a.closed;
+  save(); close_("sh-acct"); render();
+}
+function deleteAcct(){
+  const a=DB.accounts[acctIdx];
+  const n=DB.transactions.filter(t=>t.accountId===a.id).length;
+  if(n && !confirm(`"${a.name}" has ${n} transaction${n===1?"":"s"} tagged to it. They stay in your history but lose their account. Close it instead to keep things tidy. Delete anyway?`)) return;
+  if(!n && !confirm(`Delete "${a.name}"?`)) return;
+  delete DB.balances[a.name];
+  DB.accounts.splice(acctIdx,1);
+  save(); close_("sh-acct"); render();
+}
+
+/* ---------- jobs ---------- */
+let jobIdx=-1;
+function openJob(i){
+  jobIdx=i;
+  const j = i>=0 ? DB.income[i] : {name:"",perCheck:"",everyDays:14,firstPay:iso(new Date(2026,7,9))};
+  $("jb-ttl").textContent = i>=0 ? "Edit job" : "Add a job";
+  $("jb-name").value=j.name; $("jb-amt").value=j.perCheck;
+  $("jb-days").value=j.everyDays; $("jb-first").value=j.firstPay;
+  $("jb-del").style.display = i>=0 ? "block" : "none";
+  $("sh-job").classList.add("on");
+  if(i<0) setTimeout(()=>$("jb-name").focus(),260);
+}
+function saveJob(){
+  const name=$("jb-name").value.trim();
+  const amt=parseFloat($("jb-amt").value);
+  const days=parseInt($("jb-days").value,10);
+  const first=$("jb-first").value;
+  if(!name){ alert("Give the job a name."); return; }
+  if(DB.income.some((j,i)=>i!==jobIdx && j.name.toLowerCase()===name.toLowerCase())){
+    alert("You already have a job with that name."); return; }
+  if(isNaN(amt)||amt<=0){ alert("Enter the pay per check."); return; }
+  if(isNaN(days)||days<1){ alert("Pay cycle must be at least 1 day."); return; }
+  if(!first){ alert("Pick the first pay date."); return; }
+  if(jobIdx>=0){
+    const j=DB.income[jobIdx];
+    remapKeyed(DB.paychecks,j.name,name);   // carry logged paychecks across the rename
+    j.name=name; j.perCheck=+amt.toFixed(2); j.everyDays=days; j.firstPay=first;
+  } else {
+    DB.income.push({id:newId("jb"),name,perCheck:+amt.toFixed(2),everyDays:days,firstPay:first});
+  }
+  save(); close_("sh-job"); render();
+}
+function deleteJob(){
+  const j=DB.income[jobIdx];
+  const n=Object.keys(DB.paychecks).filter(k=>k.slice(k.indexOf("|")+1)===j.name).length;
+  if(!confirm(`Delete "${j.name}"?` + (n?` ${n} logged paycheck${n===1?"":"s"} will be left orphaned.`:""))) return;
+  DB.income.splice(jobIdx,1);
+  save(); close_("sh-job"); render();
 }
 
 function exportJson(){
